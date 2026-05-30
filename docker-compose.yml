@@ -1,0 +1,119 @@
+services:
+  wordpress:
+    image: wordpress:6.8.1-php8.3-apache
+    container_name: wordpress_app
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      WORDPRESS_DB_HOST: mysql:3306
+      WORDPRESS_DB_NAME: ${MYSQL_DATABASE}
+      WORDPRESS_DB_USER: ${MYSQL_USER}
+      WORDPRESS_DB_PASSWORD: ${MYSQL_PASSWORD}
+      WORDPRESS_CONFIG_EXTRA: |
+        define('FORCE_SSL_ADMIN', true);
+        if (isset($$_SERVER['HTTP_CF_VISITOR']) && strpos($$_SERVER['HTTP_CF_VISITOR'], 'https') !== false) {
+            $$_SERVER['HTTPS'] = 'on';
+        }
+        if (isset($$_SERVER['HTTP_X_FORWARDED_PROTO']) && $$_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https') {
+            $$_SERVER['HTTPS'] = 'on';
+        }
+    volumes:
+      - ./site_storage/wordpress:/var/www/html
+    networks:
+      - frontend
+      - database
+    expose:
+      - "80"
+    healthcheck:
+      test: ["CMD-SHELL", "php -r 'exit(@fsockopen(\"127.0.0.1\", 80) ? 0 : 1);'"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  wp-cli:
+    image: wordpress:cli-2.11.0-php8.3
+    container_name: wordpress_cli
+    depends_on:
+      wordpress:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+    environment:
+      WORDPRESS_DB_HOST: mysql:3306
+      WORDPRESS_DB_NAME: ${MYSQL_DATABASE}
+      WORDPRESS_DB_USER: ${MYSQL_USER}
+      WORDPRESS_DB_PASSWORD: ${MYSQL_PASSWORD}
+      WORDPRESS_SITE_URL: ${WORDPRESS_SITE_URL}
+      WORDPRESS_SITE_TITLE: ${WORDPRESS_SITE_TITLE}
+      WORDPRESS_ADMIN_USERNAME: ${WORDPRESS_ADMIN_USERNAME}
+      WORDPRESS_ADMIN_PASSWORD: ${WORDPRESS_ADMIN_PASSWORD}
+      WORDPRESS_ADMIN_EMAIL: ${WORDPRESS_ADMIN_EMAIL}
+    volumes:
+      - ./site_storage/wordpress:/var/www/html
+    networks:
+      - database
+      - frontend
+    user: "33:33"
+    entrypoint: ["/bin/sh", "-c"]
+    command: >
+      'until wp core is-installed --path=/var/www/html --allow-root >/dev/null 2>&1;
+      do
+        if wp core install
+          --path=/var/www/html
+          --url="$${WORDPRESS_SITE_URL}"
+          --title="$${WORDPRESS_SITE_TITLE}"
+          --admin_user="$${WORDPRESS_ADMIN_USERNAME}"
+          --admin_password="$${WORDPRESS_ADMIN_PASSWORD}"
+          --admin_email="$${WORDPRESS_ADMIN_EMAIL}"
+          --skip-email
+          --allow-root; then
+          break;
+        fi;
+        sleep 10;
+      done'
+    profiles:
+      - bootstrap
+    restart: "no"
+
+  mysql:
+    image: mysql:8.4
+    container_name: wordpress_mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+    volumes:
+      - ./site_storage/mysql:/var/lib/mysql
+    networks:
+      - database
+    expose:
+      - "3306"
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$${MYSQL_ROOT_PASSWORD}\" --silent"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  cloudflared:
+    image: cloudflare/cloudflared:2026.5.0
+    container_name: wordpress_cloudflared
+    restart: unless-stopped
+    depends_on:
+      wordpress:
+        condition: service_healthy
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    networks:
+      - frontend
+
+networks:
+  frontend:
+    driver: bridge
+  database:
+    driver: bridge
+    internal: true
